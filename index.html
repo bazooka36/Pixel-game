@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Pixel LAN Shooter</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; overflow: hidden; }
+        body, html { width: 100%; height: 100%; background: #11111b; font-family: monospace; }
+        canvas { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; cursor: crosshair; }
+        #hud {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #fff;
+            font-size: 24px;
+            font-weight: bold;
+            pointer-events: none;
+            text-shadow: 2px 2px 4px #000;
+        }
+        .hp { color: #a6e3a1; }
+        .shield { color: #89b4fa; }
+        .kills { color: #f9e2af; }
+    </style>
+</head>
+<body>
+
+    <div id="hud">
+        KILLS: <span id="kills" class="kills">0</span> | 
+        HP: <span id="hp" class="hp">100</span> | 
+        SHIELD: <span id="shield" class="shield">0</span>
+    </div>
+    <canvas id="game"></canvas>
+
+    <script>
+        const canvas = document.getElementById('game');
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            ctx.imageSmoothingEnabled = false;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        const SERVER_IP = window.location.hostname || 'localhost';
+        const ws = new WebSocket(`ws://${SERVER_IP}:8080`);
+
+        let myId = null;
+        let keys = { w: false, a: false, s: false, d: false };
+        let isShooting = false;
+        let walls = [];
+        let gameState = { players: [], bullets: [], items: [], explosions: [] };
+
+        ws.onmessage = (e) => {
+            const data = JSON.parse(e.data);
+            if (data.type === 'init') {
+                myId = data.id;
+                walls = data.walls;
+            }
+            if (data.type === 'state') {
+                gameState = data;
+                updateHUD();
+                render();
+            }
+        };
+
+        window.addEventListener('keydown', (e) => updateKey(e.key, true));
+        window.addEventListener('keyup', (e) => updateKey(e.key, false));
+
+        // Фиксация нажатия левой кнопки мыши (ЛКМ) для стрельбы
+        window.addEventListener('mousedown', (e) => { if (e.button === 0) isShooting = true; });
+        window.addEventListener('mouseup', (e) => { if (e.button === 0) isShooting = false; });
+
+        function updateKey(key, val) {
+            const k = key.toLowerCase();
+            if (['w','a','s','d','ц','ф','ы','в','arrowup','arrowleft','arrowdown','arrowright'].includes(k)) {
+                if (k === 'w' || k === 'ц' || k === 'arrowup') keys.w = val;
+                if (k === 'a' || k === 'ф' || k === 'arrowleft') keys.a = val;
+                if (k === 's' || k === 'ы' || k === 'arrowdown') keys.s = val;
+                if (k === 'd' || k === 'в' || k === 'arrowright') keys.d = val;
+            }
+        }
+
+        setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN && myId) {
+                ws.send(JSON.stringify({ 
+                    type: 'input', 
+                    keys: keys,
+                    shooting: isShooting 
+                }));
+            }
+        }, 1000 / 60);
+
+        function updateHUD() {
+            const me = gameState.players.find(p => p.id === myId);
+            if (me) {
+                document.getElementById('kills').innerText = me.kills;
+                document.getElementById('hp').innerText = me.hp;
+                document.getElementById('shield').innerText = me.shield;
+            }
+        }
+
+        function render() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Сетка фона
+            ctx.strokeStyle = '#1e1e2e';
+            ctx.lineWidth = 1;
+            for (let x = 0; x < canvas.width; x += 50) {
+                ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
+            }
+            for (let y = 0; y < canvas.height; y += 50) {
+                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
+            }
+
+            // Стены
+            ctx.fillStyle = '#313244';
+            ctx.strokeStyle = '#45475a';
+            ctx.lineWidth = 4;
+            walls.forEach(w => {
+                ctx.fillRect(w.x, w.y, w.w, w.h);
+                ctx.strokeRect(w.x, w.y, w.w, w.h);
+            });
+
+            // Бонусы (Плюшки)
+            gameState.items.forEach(item => {
+                ctx.save();
+                ctx.translate(item.x, item.y);
+                if (item.type === 'heal') {
+                    ctx.fillStyle = '#a6e3a1'; // Аптечка
+                    ctx.fillRect(-10, -10, 20, 20);
+                    ctx.fillStyle = '#000';
+                    ctx.fillRect(-3, -7, 6, 14);
+                    ctx.fillRect(-7, -3, 14, 6);
+                } else if (item.type === 'shield') {
+                    ctx.fillStyle = '#89b4fa'; // Щит
+                    ctx.beginPath();
+                    ctx.arc(0, 0, 12, 0, Math.PI * 2);
+                    ctx.fill();
+                } else if (item.type === 'bomb') {
+                    ctx.fillStyle = '#f38ba8'; // Бомба
+                    ctx.beginPath();
+                    ctx.arc(0, 0, 10, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                ctx.restore();
+            });
+
+            // Взрывы
+            if (gameState.explosions) {
+                gameState.explosions.forEach(e => {
+                    ctx.fillStyle = 'rgba(243, 139, 168, 0.4)';
+                    ctx.beginPath();
+                    ctx.arc(e.x, e.y, e.r, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+            }
+
+            // Пули
+            ctx.fillStyle = '#f9e2af';
+            gameState.bullets.forEach(b => {
+                ctx.fillRect(b.x - 3, b.y - 3, 6, 6);
+            });
+
+            // Игроки
+            gameState.players.forEach(p => {
+                ctx.save();
+                ctx.translate(p.x, p.y);
+
+                if (p.id === myId) {
+                    ctx.strokeStyle = '#a6e3a1';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.arc(0, 0, 24, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+
+                ctx.rotate(p.angle);
+                ctx.fillStyle = p.color;
+                ctx.fillRect(-14, -14, 28, 28);
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 3;
+                ctx.strokeRect(-14, -14, 28, 28);
+
+                // Оружие
+                ctx.fillStyle = '#fab387';
+                ctx.fillRect(12, 2, 10, 6);
+
+                ctx.restore();
+
+                // Полоска здоровья над головой
+                ctx.fillStyle = '#313244';
+                ctx.fillRect(p.x - 20, p.y - 30, 40, 6);
+                ctx.fillStyle = '#a6e3a1';
+                ctx.fillRect(p.x - 20, p.y - 30, (p.hp / 100) * 40, 6);
+                if (p.shield > 0) {
+                    ctx.fillStyle = '#89b4fa';
+                    ctx.fillRect(p.x - 20, p.y - 30, (p.shield / 100) * 40, 3);
+                }
+            });
+        }
+    </script>
+</body>
+</html>
